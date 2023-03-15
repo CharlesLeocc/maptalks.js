@@ -20,8 +20,6 @@ import Layer from '../Layer';
 import SpatialReference from '../../map/spatial-reference/SpatialReference';
 import { intersectsBox } from 'frustum-intersects';
 import * as vec3 from '../../core/util/vec3';
-import { registerWorkerAdapter } from '../../core/worker/Worker';
-import { imageFetchWorkerKey } from '../../core/worker/CoreWorkers';
 
 const DEFAULT_MAXERROR = 1;
 const TEMP_POINT = new Point(0, 0);
@@ -87,6 +85,7 @@ class TileHashset {
  * @property {Boolean}             [options.decodeImageInWorker=false]  - decode image in worker, for better performance if the server support
  * @property {String}              [options.token=null]       - token to replace {token} in template http://foo/bar/{z}/{x}/{y}?token={token}
  * @property {Object}              [options.fetchOptions=object]       - fetch params,such as fetchOptions: { 'headers': { 'accept': '' } }, about accept value more info https://developer.mozilla.org/en-US/docs/Web/HTTP/Content_negotiation/List_of_default_Accept_values
+ * @property {Boolean}             [options.awareOfTerrain=true]       - if the tile layer is aware of terrain.
  * @memberOf TileLayer
  * @instance
  */
@@ -142,7 +141,9 @@ const options = {
 
     'tileLimitPerFrame': 0,
 
-    'backZoomOffset': 0
+    'backZoomOffset': 0,
+
+    'awareOfTerrain': true
 };
 
 const URL_PATTERN = /\{ *([\w_]+) *\}/g;
@@ -189,6 +190,18 @@ class TileLayer extends Layer {
             return null;
         }
         return new TileLayer(layerJSON['id'], layerJSON['options']);
+    }
+
+    /**
+     * force Reload tilelayer.
+     * Note that this method will clear all cached tiles and reload them. It shouldn't be called frequently for performance reason.
+
+     * @return {TileLayer} this
+     */
+    forceReload() {
+        this.clear();
+        this.load();
+        return this;
     }
 
 
@@ -1294,6 +1307,32 @@ class TileLayer extends Layer {
             renderer.clear();
         }
     }
+
+    /**
+     * Get layer's polygonOffset count
+     * @return {Number}
+     */
+    getPolygonOffsetCount() {
+        return 2;
+    }
+
+    /**
+     * Get layer's base polygon offset
+     * @return {Number}
+     */
+    getPolygonOffset() {
+        return this._polygonOffset || 0;
+    }
+
+    /**
+     * Set layer's base polygon offset, called by GroupGLLayer
+     * @param {Number} offset polygon offset
+     * @return {TileLayer}
+     */
+    setPolygonOffset(offset) {
+        this._polygonOffset = offset;
+        return this;
+    }
 }
 
 TileLayer.registerJSONType('TileLayer');
@@ -1321,50 +1360,3 @@ function distanceToRect(min, max, xyz) {
     return Math.sqrt(dx * dx + dy * dy + dz * dz);
 }
 
-const workerSource = `
-function (exports) {
-    exports.onmessage = function (msg, postResponse) {
-        var url = msg.data.url;
-        var fetchOptions = msg.data.fetchOptions;
-        requestImageOffscreen(url, function (err, data) {
-            var buffers = [];
-            if (data && data.data && data.data.buffer) {
-                buffers.push(data.data.buffer);
-            }
-            postResponse(err, data, buffers);
-        }, fetchOptions);
-    };
-
-    var offCanvas, offCtx;
-    function requestImageOffscreen(url, cb, fetchOptions) {
-        if (!offCanvas) {
-            offCanvas = new OffscreenCanvas(2, 2);
-            offCtx = offCanvas.getContext('2d');
-        }
-        fetch(url, fetchOptions ? fetchOptions : {})
-            .then(response => response.blob())
-            .then(blob => createImageBitmap(blob))
-            .then(bitmap => {
-                var { width, height } = bitmap;
-                offCanvas.width = width;
-                offCanvas.height = height;
-                offCtx.drawImage(bitmap, 0, 0);
-                bitmap.close();
-                var imgData = offCtx.getImageData(0, 0, width, height);
-                // debugger
-                cb(null, { width, height, data: new Uint8Array(imgData.data) });
-            }).catch(err => {
-                console.warn('error when loading tile:', url);
-                console.warn(err);
-                cb(err);
-            });
-    }
-}`;
-
-function registerWorkerSource() {
-    if (!Browser.decodeImageInWorker) {
-        return;
-    }
-    registerWorkerAdapter(imageFetchWorkerKey, function () { return workerSource; });
-}
-registerWorkerSource();

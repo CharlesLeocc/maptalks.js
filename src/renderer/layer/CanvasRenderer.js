@@ -6,6 +6,7 @@ import Canvas2D from '../../core/Canvas';
 import Actor from '../../core/worker/Actor';
 import Point from '../../geo/Point';
 import { imageFetchWorkerKey } from '../../core/worker/CoreWorkers';
+import { registerWorkerAdapter } from '../../core/worker/Worker';
 
 const EMPTY_ARRAY = [];
 class ResourceWorkerConnection extends Actor {
@@ -39,7 +40,7 @@ class CanvasRenderer extends Class {
         this.layer = layer;
         this._painted = false;
         this._drawTime = 0;
-        if (Browser.decodeImageInWorker && (layer.options['renderer'] === 'gl' || !Browser.safari)) {
+        if (Browser.decodeImageInWorker && (layer.options['renderer'] === 'gl' || !Browser.safari && !Browser.iosWeixin)) {
             this._resWorkerConn = new ResourceWorkerConnection();
         }
         this.setToRedraw();
@@ -580,10 +581,13 @@ class CanvasRenderer extends Class {
                 painter.paint(null, context);
             });
             context.stroke();
-            delete context.isMultiClip;
+            context.isMultiClip = false;
         } else {
+            context.isClip = true;
+            context.beginPath();
             const painter = mask._getMaskPainter();
             painter.paint(null, context);
+            context.isClip = false;
         }
         if (dpr !== 1) {
             context.restore();
@@ -860,7 +864,7 @@ export class ResourceCache {
             height: +url[2],
             refCnt: 0
         };
-        if (img && !img.close && Browser.imageBitMap && !Browser.safari) {
+        if (img && !img.close && Browser.imageBitMap && !Browser.safari && !Browser.iosWeixin) {
             if (img.src && isSVG(img.src)) {
                 return;
             }
@@ -959,3 +963,52 @@ export class ResourceCache {
         this.resources = {};
     }
 }
+
+const workerSource = `
+function (exports) {
+    exports.onmessage = function (msg, postResponse) {
+        var url = msg.data.url;
+        var fetchOptions = msg.data.fetchOptions;
+        requestImageOffscreen(url, function (err, data) {
+            var buffers = [];
+            if (data && data.data) {
+                buffers.push(data.data);
+            }
+            postResponse(err, data, buffers);
+        }, fetchOptions);
+    };
+
+    var offCanvas, offCtx;
+    function requestImageOffscreen(url, cb, fetchOptions) {
+        if (!offCanvas) {
+            offCanvas = new OffscreenCanvas(2, 2);
+            offCtx = offCanvas.getContext('2d',{willReadFrequently: true });
+        }
+        fetch(url, fetchOptions ? fetchOptions : {})
+            .then(response => response.blob())
+            .then(blob => createImageBitmap(blob))
+            .then(bitmap => {
+                // var { width, height } = bitmap;
+                // offCanvas.width = width;
+                // offCanvas.height = height;
+                // offCtx.drawImage(bitmap, 0, 0);
+                // bitmap.close();
+                // var imgData = offCtx.getImageData(0, 0, width, height);
+                // debugger
+                // https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API/Transferable_objects#supported_objects
+                cb(null, {data:bitmap});
+            }).catch(err => {
+                console.warn('error when loading tile:', url);
+                console.warn(err);
+                cb(err);
+            });
+    }
+}`;
+
+function registerWorkerSource() {
+    if (!Browser.decodeImageInWorker) {
+        return;
+    }
+    registerWorkerAdapter(imageFetchWorkerKey, function () { return workerSource; });
+}
+registerWorkerSource();
