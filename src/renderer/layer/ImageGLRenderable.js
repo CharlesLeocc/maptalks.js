@@ -1,9 +1,12 @@
-import { IS_NODE, extend, isInteger, log2, isNil } from '../../core/util';
+import { IS_NODE, extend, isInteger, log2, isNil, isNumber } from '../../core/util';
 import { createGLContext, createProgram, enableVertexAttrib } from '../../core/util/gl';
 import Browser from '../../core/Browser';
 import * as mat4 from '../../core/util/mat4';
 import Canvas from '../../core/Canvas';
 import Point from '../../geo/Point';
+
+// used to debug tiles
+const DEFAULT_BASE_COLOR = [1, 1, 1, 1];
 
 const shaders = {
     'vertexShader': `
@@ -29,6 +32,7 @@ const shaders = {
 
         uniform float u_opacity;
         uniform float u_debug_line;
+        uniform vec4 u_base_color;
 
         varying vec2 v_texCoord;
 
@@ -38,6 +42,7 @@ const shaders = {
             } else {
                 gl_FragColor = texture2D(u_image, v_texCoord) * u_opacity;
             }
+            gl_FragColor *= u_base_color;
         }
     `
 };
@@ -65,7 +70,7 @@ const ImageGLRenderable = Base => {
          * @param {Number} h - height at map's gl zoom
          * @param {Number} opacity
          */
-        drawGLImage(image, x, y, w, h, scale, opacity, debug) {
+        drawGLImage(image, x, y, w, h, scale, opacity, debug, baseColor) {
             if (this.gl.program !== this.program) {
                 this.useProgram(this.program);
             }
@@ -81,6 +86,25 @@ const ImageGLRenderable = Base => {
             }
             v3[0] = x || 0;
             v3[1] = y || 0;
+            v3[2] = 0;
+            const layer = this.layer;
+            if (layer) {
+                const { altitude } = layer.options;
+                const altIsNumber = isNumber(altitude);
+                if (!altIsNumber) {
+                    this._layerAlt = 0;
+                }
+                //update _layerAlt cache
+                if (this._layerAltitude !== altitude && altIsNumber) {
+                    const map = layer.getMap();
+                    if (map) {
+                        const z = map.altitudeToPoint(altitude, map.getGLRes());
+                        this._layerAltitude = altitude;
+                        this._layerAlt = z;
+                    }
+                }
+            }
+            v3[2] = this._layerAlt || 0;
             const uMatrix = mat4.identity(arr16);
             mat4.translate(uMatrix, uMatrix, v3);
             mat4.scale(uMatrix, uMatrix, [scale, scale, 1]);
@@ -88,6 +112,7 @@ const ImageGLRenderable = Base => {
             gl.uniformMatrix4fv(this.program['u_matrix'], false, uMatrix);
             gl.uniform1f(this.program['u_opacity'], opacity);
             gl.uniform1f(this.program['u_debug_line'], 0);
+            gl.uniform4fv(this.program['u_base_color'], baseColor || DEFAULT_BASE_COLOR);
 
             const { glBuffer } = image;
             if (glBuffer && (glBuffer.width !== w || glBuffer.height !== h)) {
@@ -126,6 +151,7 @@ const ImageGLRenderable = Base => {
             gl.uniformMatrix4fv(this.program['u_matrix'], false, uMatrix);
             gl.uniform1f(this.program['u_opacity'], 1);
             gl.uniform1f(this.program['u_debug_line'], 1);
+            gl.uniform4fv(this.program['u_base_color'], DEFAULT_BASE_COLOR);
             gl.drawArrays(gl.LINE_STRIP, 0, 5);
             //draw debug info
             let canvas = this._debugInfoCanvas;
@@ -354,6 +380,7 @@ const ImageGLRenderable = Base => {
          * @returns {WebGLTexture}
          */
         loadTexture(image) {
+            const map = this.getMap();
             const gl = this.gl;
             let texture = image.texture;   // Create a texture object
             if (!texture) {
@@ -361,6 +388,12 @@ const ImageGLRenderable = Base => {
                 image.texture = texture;
             }
             gl.bindTexture(gl.TEXTURE_2D, texture);
+            if (map.getRenderer().isViewChanged()) {
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+            } else {
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            }
+
             return texture;
         }
 
